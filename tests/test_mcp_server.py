@@ -85,23 +85,48 @@ class GatewayTests(TestCase):
 
 
 class ToolTests(TestCase):
+    REMOVED_THIRD_PARTY_PRODUCT_IDS = {
+        "684ad781d4819127431f9fe1",
+        "684ad781d4819127431f9ff8",
+        "684ad781d4819127431fa016",
+        "684ad781d4819127431fa026",
+    }
+
     def test_registered_tool_names(self) -> None:
         tools = asyncio.run(server.mcp.list_tools())
         self.assertEqual(
             {tool.name for tool in tools},
             {
+                "goods_enterprise_search",
                 "goods_search",
-                "goods_profile",
+                "goods_enterprise_products",
+                "goods_overseas_store_products",
                 "goods_brand",
-                "goods_price",
                 "goods_channel",
-                "goods_trend",
             },
         )
         for tool in tools:
             self.assertEqual(tool.outputSchema.get("type"), "object")
             self.assertTrue(tool.annotations.readOnlyHint)
             self.assertFalse(tool.annotations.destructiveHint)
+
+    def test_enterprise_search_resolves_abbreviated_company_names(self) -> None:
+        with patch.object(
+            server,
+            "call_api",
+            return_value={"total": 1, "resultList": [{"name": "企业A全称"}]},
+        ) as call:
+            result = server.goods_enterprise_search("企业A", pageSize=5)
+        self.assertEqual(result["total"], 1)
+        call.assert_called_once_with(
+            server.PRODUCT_IDS["enterprise_search"],
+            {"matchKeyword": "企业A", "pageIndex": 1, "pageSize": 5},
+        )
+
+        with patch.object(server, "call_api") as call:
+            invalid = server.goods_enterprise_search("企业A", pageSize=51)
+        self.assertEqual(invalid["parameter"], "pageSize")
+        call.assert_not_called()
 
     def test_search_routes_one_product_per_call(self) -> None:
         with patch.object(
@@ -144,11 +169,31 @@ class ToolTests(TestCase):
             },
         )
 
-    def test_profile_and_brand_routes(self) -> None:
-        with patch.object(server, "call_api", return_value={}) as call:
-            server.goods_profile("企业A")
+    def test_enterprise_product_sources_route_one_product_per_call(self) -> None:
+        with patch.object(
+            server,
+            "call_api",
+            return_value={"total": 1, "resultList": [{"commodityName": "手机"}]},
+        ) as call:
+            result = server.goods_enterprise_products("企业A")
+        self.assertEqual(
+            result,
+            {"total": 1, "resultList": [{"commodityName": "手机"}]},
+        )
         call.assert_called_once_with(
-            server.PRODUCT_IDS["domestic_product_profile"],
+            server.PRODUCT_IDS["enterprise_retail_products"],
+            {
+                "matchKeyword": "企业A",
+                "keywordType": "name",
+                "pageIndex": 1,
+                "pageSize": 10,
+            },
+        )
+
+        with patch.object(server, "call_api", return_value={}) as call:
+            server.goods_enterprise_products("企业A", productType="ecommerce")
+        call.assert_called_once_with(
+            server.PRODUCT_IDS["enterprise_ecommerce_products"],
             {
                 "matchKeyword": "企业A",
                 "keywordType": "name",
@@ -157,6 +202,7 @@ class ToolTests(TestCase):
             },
         )
 
+    def test_overseas_store_products_have_a_dedicated_tool(self) -> None:
         with patch.object(
             server,
             "call_api",
@@ -165,18 +211,16 @@ class ToolTests(TestCase):
                 "productList": [{"id": 1}, {"id": 2}, {"id": 3}],
             },
         ) as call:
-            result = server.goods_profile(
-                "shop-1",
-                source="overseas",
-                pageIndex=2,
-                pageSize=2,
+            result = server.goods_overseas_store_products(
+                "shop-1", pageIndex=2, pageSize=2
             )
         self.assertEqual(result, {"total": 3, "resultList": [{"id": 3}]})
         call.assert_called_once_with(
-            server.PRODUCT_IDS["overseas_product_profile"],
+            server.PRODUCT_IDS["overseas_store_products"],
             {"matchKeyword": "shop-1"},
         )
 
+    def test_brand_routes_one_product_per_call(self) -> None:
         with patch.object(server, "call_api", return_value={}) as call:
             server.goods_brand("企业A", view="product_overview")
         call.assert_called_once_with(
@@ -184,63 +228,12 @@ class ToolTests(TestCase):
             {"matchKeyword": "企业A", "keywordType": "name"},
         )
 
-    def test_price_requires_source_specific_parameters(self) -> None:
-        with patch.object(server, "call_api") as call:
-            result = server.goods_price("202505")
-        self.assertEqual(result["parameter"], "platform")
-        call.assert_not_called()
-
-        with patch.object(server, "call_api", return_value={}) as call:
-            server.goods_price(
-                "202505",
-                platform="天猫商城",
-                shopId="shop-1",
-            )
-        call.assert_called_once_with(
-            server.PRODUCT_IDS["store_top_items"],
-            {
-                "platform": "天猫商城",
-                "shopId": "shop-1",
-                "statsMonth": "202505",
-            },
-        )
-
-        with patch.object(server, "call_api", return_value={}) as call:
-            server.goods_price(
-                "202505",
-                source="enterprise_monthly_sales",
-                matchKeyword="企业A",
-            )
-        call.assert_called_once_with(
-            server.PRODUCT_IDS["enterprise_monthly_sales"],
-            {
-                "matchKeyword": "企业A",
-                "keywordType": "name",
-                "statsMonth": "202505",
-            },
-        )
-
-    def test_channel_and_trend_routes(self) -> None:
+    def test_channel_routes_one_product_per_call(self) -> None:
         with patch.object(server, "call_api", return_value={}) as call:
             server.goods_channel("企业A", source="global_store")
         call.assert_called_once_with(
             server.PRODUCT_IDS["global_store_channel"],
             {"matchKeyword": "企业A", "keywordType": "name"},
-        )
-
-        with patch.object(server, "call_api", return_value={}) as call:
-            server.goods_trend(
-                "202505",
-                source="enterprise_cumulative",
-                matchKeyword="企业A",
-            )
-        call.assert_called_once_with(
-            server.PRODUCT_IDS["enterprise_cumulative_sales"],
-            {
-                "matchKeyword": "企业A",
-                "keywordType": "name",
-                "statsMonth": "202505",
-            },
         )
 
     def test_pagination_validation_blocks_invalid_request(self) -> None:
@@ -249,16 +242,51 @@ class ToolTests(TestCase):
         self.assertEqual(result["parameter"], "pageSize")
         call.assert_not_called()
 
-    def test_stats_month_validation_blocks_invalid_request(self) -> None:
-        for function in (server.goods_price, server.goods_trend):
-            with self.subTest(function=function.__name__):
-                with patch.object(server, "call_api") as call:
-                    result = function("2025-05")
-                self.assertEqual(result["parameter"], "statsMonth")
-                call.assert_not_called()
+    def test_enterprise_retail_page_size_is_limited_to_ten(self) -> None:
+        with patch.object(server, "call_api") as call:
+            result = server.goods_enterprise_products("企业A", pageSize=11)
+        self.assertEqual(result["parameter"], "pageSize")
+        self.assertIn("1 到 10", result["error"])
+        call.assert_not_called()
+
+        with patch.object(server, "call_api", return_value={}) as call:
+            server.goods_enterprise_products(
+                "企业A", productType="ecommerce", pageSize=50
+            )
+        call.assert_called_once()
+
+    def test_removed_third_party_products_are_not_routable(self) -> None:
+        self.assertTrue(
+            self.REMOVED_THIRD_PARTY_PRODUCT_IDS.isdisjoint(
+                server.PRODUCT_IDS.values()
+            )
+        )
+        self.assertEqual(
+            server.PRODUCT_IDS["enterprise_retail_products"],
+            "6a62157cb050fd2d69e9f7ff",
+        )
 
     def test_invalid_transport_is_rejected_without_starting_server(self) -> None:
         with patch.object(server.mcp, "run") as run:
             result = server.main(["websocket"])
         self.assertEqual(result, 2)
         run.assert_not_called()
+
+
+class DocumentationTests(TestCase):
+    def test_readme_matches_redesigned_tools_and_products(self) -> None:
+        readme = (SERVER_PATH.parents[1] / "README.md").read_text(encoding="utf-8")
+        for tool_name in (
+            "goods_enterprise_search",
+            "goods_search",
+            "goods_enterprise_products",
+            "goods_overseas_store_products",
+            "goods_brand",
+            "goods_channel",
+        ):
+            self.assertIn(f"`{tool_name}`", readme)
+        self.assertIn("6a62157cb050fd2d69e9f7ff", readme)
+        for product_id in ToolTests.REMOVED_THIRD_PARTY_PRODUCT_IDS:
+            self.assertNotIn(product_id, readme)
+        self.assertNotIn("`goods_price`", readme)
+        self.assertNotIn("`goods_trend`", readme)

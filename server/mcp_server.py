@@ -18,8 +18,9 @@ load_dotenv()
 mcp = FastMCP(
     "商品大数据",
     instructions=(
-        "面向选品、竞品、品牌、价格、渠道和销售趋势分析。"
-        "组合场景通过 source 参数选择一个上游数据源，单次工具调用不会默认触发多个计费接口。"
+        "面向企业简称解析、商品发现、企业商品核验、海外店铺商品、品牌和渠道分析。"
+        "组合场景通过 source、productType 或 view 选择一个上游数据源，"
+        "单次工具调用不会默认触发多个计费接口。"
     ),
     dependencies=["python-dotenv", "requests"],
 )
@@ -28,18 +29,16 @@ GATEWAY_BASE_URL = "https://console.handaas.com/api/v1/integrator/call_api"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
 PRODUCT_IDS = {
+    "enterprise_search": "675cea1f0e009a9ea37edaa1",
     "retail_search": "6a609f509d30d4fcc00ccff5",
     "overseas_search": "66c9a954268e9d7292c1a9ab",
-    "domestic_product_profile": "66c33eff3c0917a9a02feb9d",
-    "overseas_product_profile": "66d5b7e0537c3f61d646c496",
+    "enterprise_retail_products": "6a62157cb050fd2d69e9f7ff",
+    "enterprise_ecommerce_products": "66c33eff3c0917a9a02feb9d",
+    "overseas_store_products": "66d5b7e0537c3f61d646c496",
     "brand_detail": "66c702b725f04ab44cd24d5e",
     "brand_product_overview": "66d5b7e1537c3f61d646c573",
-    "store_top_items": "684ad781d4819127431f9fe1",
-    "enterprise_monthly_sales": "684ad781d4819127431fa026",
     "domestic_store_channel": "66c702b725f04ab44cd24c83",
     "global_store_channel": "672b3125338beb3ec2f5dc43",
-    "store_monthly_sales": "684ad781d4819127431f9ff8",
-    "enterprise_cumulative_sales": "684ad781d4819127431fa016",
 }
 
 KeywordType = Literal["name", "nameId", "regNumber", "socialCreditCode"]
@@ -80,13 +79,17 @@ def _compact_params(params: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in params.items() if value is not None}
 
 
-def _pagination_error(page_index: int, page_size: int) -> dict[str, Any] | None:
+def _pagination_error(
+    page_index: int,
+    page_size: int,
+    max_page_size: int = 50,
+) -> dict[str, Any] | None:
     """校验 HandaaS 分页公共约束。"""
     if page_index < 1:
         return {"error": "pageIndex 必须大于等于 1", "parameter": "pageIndex"}
-    if page_size < 1 or page_size > 50:
+    if page_size < 1 or page_size > max_page_size:
         return {
-            "error": "pageSize 必须在 1 到 50 之间",
+            "error": f"pageSize 必须在 1 到 {max_page_size} 之间",
             "parameter": "pageSize",
         }
     return None
@@ -119,29 +122,6 @@ def _normalize_product_page(
     return {
         "total": total,
         "resultList": product_list[start : start + page_size],
-    }
-
-
-def _stats_month_error(stats_month: str) -> dict[str, Any] | None:
-    """校验 yyyyMM 统计月份。"""
-    if (
-        len(stats_month) != 6
-        or not stats_month.isdigit()
-        or not 1 <= int(stats_month[4:]) <= 12
-    ):
-        return {
-            "error": "statsMonth 必须使用 yyyyMM 格式，例如 202505",
-            "parameter": "statsMonth",
-        }
-    return None
-
-
-def _missing_parameter(name: str, source: str) -> dict[str, Any]:
-    """生成可操作的条件必填参数错误。"""
-    return {
-        "error": f"选择 {source} 数据源时必须提供 {name}",
-        "parameter": name,
-        "source": source,
     }
 
 
@@ -208,6 +188,36 @@ def call_api(product_id: str, params: dict[str, Any]) -> Any:
     return error
 
 
+@mcp.tool(title="关键词查询企业", annotations=READ_ONLY_TOOL)
+def goods_enterprise_search(
+    matchKeyword: str,
+    pageIndex: int = 1,
+    pageSize: int = 10,
+) -> dict[str, Any]:
+    """
+    按企业简称、品牌、产品或其他关键词查询候选企业。
+
+    当用户输入简称且不能直接匹配企业时，先调用本工具，
+    再将返回的企业全称、企业 ID 或统一社会信用代码用于商品类 Tool。
+
+    返回:
+    - total: 候选企业总数。
+    - resultList: 企业名称、企业 ID、统一社会信用代码及基础信息。
+    """
+    if error := _pagination_error(pageIndex, pageSize):
+        return error
+    return _normalize_paged_result(
+        call_api(
+            PRODUCT_IDS["enterprise_search"],
+            {
+                "matchKeyword": matchKeyword,
+                "pageIndex": pageIndex,
+                "pageSize": pageSize,
+            },
+        )
+    )
+
+
 @mcp.tool(title="商品搜索", annotations=READ_ONLY_TOOL)
 def goods_search(
     matchKeyword: str | None = None,
@@ -270,43 +280,78 @@ def goods_search(
     )
 
 
-@mcp.tool(title="商品画像", annotations=READ_ONLY_TOOL)
-def goods_profile(
+@mcp.tool(title="企业商品查询", annotations=READ_ONLY_TOOL)
+def goods_enterprise_products(
     matchKeyword: str,
-    source: Literal["domestic", "overseas"] = "domestic",
+    productType: Literal["retail", "ecommerce"] = "retail",
     keywordType: KeywordType = "name",
+    pageIndex: int = 1,
+    pageSize: int | None = None,
+) -> dict[str, Any]:
+    """
+    按企业标识查询零售商品或电商商品明细。
+
+    参数:
+    - matchKeyword: 企业名称、企业 ID、注册号或统一社会信用代码。
+    - productType: retail=企业零售商品，返回条码、品牌、上架日期和 GPC 分类；
+      ecommerce=企业电商商品，返回商品名称、图片、价格和来源平台。
+    - keywordType: matchKeyword 的主体类型。
+    - pageIndex: 页码，从 1 开始。
+    - pageSize: retail 最大 10、默认 10；ecommerce 最大 50、默认 50。
+
+    返回:
+    - total: 企业商品总数。
+    - resultList: 当前页商品明细。
+    """
+    default_page_size = 10 if productType == "retail" else 50
+    resolved_page_size = pageSize if pageSize is not None else default_page_size
+    max_page_size = 10 if productType == "retail" else 50
+    if error := _pagination_error(pageIndex, resolved_page_size, max_page_size):
+        return error
+    route = (
+        "enterprise_retail_products"
+        if productType == "retail"
+        else "enterprise_ecommerce_products"
+    )
+    return _normalize_paged_result(
+        call_api(
+            PRODUCT_IDS[route],
+            {
+                "matchKeyword": matchKeyword,
+                "keywordType": keywordType,
+                "pageIndex": pageIndex,
+                "pageSize": resolved_page_size,
+            },
+        )
+    )
+
+
+@mcp.tool(title="海外店铺商品查询", annotations=READ_ONLY_TOOL)
+def goods_overseas_store_products(
+    storeId: str,
     pageIndex: int = 1,
     pageSize: int = 50,
 ) -> dict[str, Any]:
     """
-    查询企业国内电商商品明细或指定海外网店的商品画像。
+    按海外网店 ID 查询店铺商品，用于跨境选品和竞品目录研究。
 
     参数:
-    - matchKeyword: domestic 时为企业标识；overseas 时为海外网店 ID。
-    - source: domestic=企业电商商品明细；overseas=海外网店商品。
-    - keywordType: domestic 企业标识类型。
-    - pageIndex/pageSize: 两种数据源共用的 MCP 分页参数，pageSize 最大 50。
+    - storeId: 由 goods_search(source=overseas) 返回的海外网店 _id。
+    - pageIndex/pageSize: MCP 本地分页，pageSize 最大 50。
+
+    返回:
+    - total: 上游商品总数。
+    - resultList: 当前页商品、评论、BSR、类目和链接信息。
     """
     if error := _pagination_error(pageIndex, pageSize):
         return error
-    if source == "overseas":
-        return _normalize_product_page(
-            call_api(
-                PRODUCT_IDS["overseas_product_profile"],
-                {"matchKeyword": matchKeyword},
-            ),
-            pageIndex,
-            pageSize,
-        )
-
-    return call_api(
-        PRODUCT_IDS["domestic_product_profile"],
-        {
-            "matchKeyword": matchKeyword,
-            "keywordType": keywordType,
-            "pageIndex": pageIndex,
-            "pageSize": pageSize,
-        },
+    return _normalize_product_page(
+        call_api(
+            PRODUCT_IDS["overseas_store_products"],
+            {"matchKeyword": storeId},
+        ),
+        pageIndex,
+        pageSize,
     )
 
 
@@ -328,48 +373,6 @@ def goods_brand(
     return call_api(
         PRODUCT_IDS[route],
         {"matchKeyword": matchKeyword, "keywordType": keywordType},
-    )
-
-
-@mcp.tool(title="商品价格分析", annotations=READ_ONLY_TOOL)
-def goods_price(
-    statsMonth: str,
-    source: Literal["store_hot_items", "enterprise_monthly_sales"] = "store_hot_items",
-    platform: str | None = None,
-    shopId: str | None = None,
-    matchKeyword: str | None = None,
-    keywordType: KeywordType = "name",
-) -> dict[str, Any]:
-    """
-    查询店铺热销商品价格表现或企业月度销售表现。
-
-    参数:
-    - statsMonth: 统计月份，格式 yyyyMM，例如 202505。
-    - source: store_hot_items=店铺 Top50 热销商品；enterprise_monthly_sales=企业月销售。
-    - platform/shopId: 店铺热销商品数据源必填。
-    - matchKeyword/keywordType: 企业月销售数据源使用的企业标识。
-    """
-    if error := _stats_month_error(statsMonth):
-        return error
-    if source == "store_hot_items":
-        if not platform:
-            return _missing_parameter("platform", source)
-        if not shopId:
-            return _missing_parameter("shopId", source)
-        return call_api(
-            PRODUCT_IDS["store_top_items"],
-            {"platform": platform, "shopId": shopId, "statsMonth": statsMonth},
-        )
-
-    if not matchKeyword:
-        return _missing_parameter("matchKeyword", source)
-    return call_api(
-        PRODUCT_IDS["enterprise_monthly_sales"],
-        {
-            "matchKeyword": matchKeyword,
-            "keywordType": keywordType,
-            "statsMonth": statsMonth,
-        },
     )
 
 
@@ -405,57 +408,6 @@ def goods_channel(
             "keywordType": keywordType,
             "pageIndex": pageIndex,
             "pageSize": pageSize,
-        },
-    )
-
-
-@mcp.tool(title="商品销售趋势", annotations=READ_ONLY_TOOL)
-def goods_trend(
-    statsMonth: str,
-    source: Literal[
-        "store_monthly",
-        "enterprise_monthly",
-        "enterprise_cumulative",
-    ] = "store_monthly",
-    platform: str | None = None,
-    shopId: str | None = None,
-    matchKeyword: str | None = None,
-    keywordType: KeywordType = "name",
-) -> dict[str, Any]:
-    """
-    查询店铺或企业的月度、累计销售趋势。
-
-    参数:
-    - statsMonth: 统计月份，格式 yyyyMM。
-    - source: store_monthly、enterprise_monthly 或 enterprise_cumulative。
-    - platform/shopId: store_monthly 数据源必填。
-    - matchKeyword/keywordType: 企业月度或累计趋势数据源使用的企业标识。
-    """
-    if error := _stats_month_error(statsMonth):
-        return error
-    if source == "store_monthly":
-        if not platform:
-            return _missing_parameter("platform", source)
-        if not shopId:
-            return _missing_parameter("shopId", source)
-        return call_api(
-            PRODUCT_IDS["store_monthly_sales"],
-            {"platform": platform, "shopId": shopId, "statsMonth": statsMonth},
-        )
-
-    if not matchKeyword:
-        return _missing_parameter("matchKeyword", source)
-    route = (
-        "enterprise_monthly_sales"
-        if source == "enterprise_monthly"
-        else "enterprise_cumulative_sales"
-    )
-    return call_api(
-        PRODUCT_IDS[route],
-        {
-            "matchKeyword": matchKeyword,
-            "keywordType": keywordType,
-            "statsMonth": statsMonth,
         },
     )
 
