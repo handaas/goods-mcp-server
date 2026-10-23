@@ -16,7 +16,7 @@ from mcp.types import ToolAnnotations
 load_dotenv()
 
 mcp = FastMCP(
-    "商品大数据",
+    "零售商品动态",
     instructions=(
         "面向企业简称解析、商品发现、企业商品核验、海外店铺商品、品牌和渠道分析。"
         "组合场景通过 source、productType 或 view 选择一个上游数据源，"
