@@ -1,18 +1,21 @@
 # 零售商品动态
 
-[该 MCP 服务提供企业关键词搜索、商品搜索、企业商品、海外店铺商品、品牌和电商渠道查询能力，帮助用户开展选品、竞品研究、商品资质核验与渠道分析。](https://www.handaas.com/)
+[该 MCP 服务围绕零售商品动态，提供企业关键词搜索、商品搜索、企业商品、海外店铺商品、品牌和电商渠道查询能力，帮助用户开展选品、竞品研究、商品资质核验与渠道分析。](https://www.handaas.com/)
+
+> 所属板块：市场贸易
 
 ## 主要功能
 
 - 🏢 企业简称与关键词搜索
-- 🔍 零售商品与海外网店搜索
-- 🧾 企业零售商品和电商商品查询
+- 🔍 零售商品动态与海外网店搜索
+- 🧾 企业零售商品和电商商品盘点
 - 🌍 海外店铺商品目录查询
 - 🏷️ 美业企业品牌与产品功效分析
 - 🛒 国内及全球网店渠道分析
 
 ## 服务设计说明
 
+- 服务定位为“零售商品动态”，以商品发现、企业商品盘点和渠道变化分析为主要使用场景。
 - 服务按实际使用对象提供 6 个 Tool，不按上游 API 数量平铺工具。
 - 用户只提供企业简称时，先用 `goods_enterprise_search` 获取企业全称或稳定 ID。
 - 企业商品与海外店铺商品分别提供独立 Tool，避免同一个参数在不同来源中表达不同对象。
@@ -108,6 +111,23 @@ python server/mcp_server.py streamable-http
 ```
 
 `INTEGRATOR_ID`、`SECRET_ID` 和 `SECRET_KEY` 需要登录 [HandaaS](https://www.handaas.com/) 注册并开通对接器后获取。真实凭据只应保存在本地 `.env` 或部署密钥中。
+
+## 使用官方Remote服务
+
+### 1. 直接设置Cursor / Cherry Studio MCP配置
+
+```json
+{
+  "mcpServers": {
+    "goods-mcp-server":{
+      "type": "streamableHttp",
+      "url": "https://mcp.handaas.com/goods/goods_bigdata?token={token}"
+      }
+  }
+}
+```
+
+### 注意：integrator_id、secret_id、secret_key及token需要登录 https://www.handaas.com/ 进行注册开通平台获取
 
 ## 可用工具与 Product ID
 
